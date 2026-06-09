@@ -149,7 +149,8 @@ async fn run_session(
         Err(e) => {
             cancel.cancel();
             let _ = bridge.await;
-            return fail(&app, session_id, format!("Deepgram client: {e}"));
+            eprintln!("[session] Deepgram client error: {e}");
+            return fail(&app, session_id, "Deepgram: invalid API key or network error".into());
         }
     };
     let (model, lang) = model_language(&language);
@@ -181,7 +182,8 @@ async fn run_session(
                 m.stop();
             }
             sys.stop();
-            return fail(&app, session_id, format!("Deepgram connect: {e}"));
+            eprintln!("[session] Deepgram connect error: {e}");
+            return fail(&app, session_id, "Deepgram: connection failed".into());
         }
     };
 
@@ -199,8 +201,11 @@ async fn run_session(
                 Some(Err(e)) => {
                     let _ = app.emit(
                         events::SESSION_STATE,
-                        SessionState::new(Some(session_id), "error").with_error(format!("stream: {e}")),
+                        SessionState::new(Some(session_id), "error").with_error("stream error".into()),
                     );
+                    eprintln!("[session] stream error: {e}");
+                    cancel.cancel();
+                    break;
                 }
                 None => break,
             }

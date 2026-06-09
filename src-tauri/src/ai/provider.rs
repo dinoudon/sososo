@@ -5,7 +5,9 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provider {
     OpenAi,
+    OpenAiCompatible,
     Gemini,
+    Anthropic,
 }
 
 impl Provider {
@@ -13,6 +15,8 @@ impl Provider {
     pub fn from_setting(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "gemini" => Provider::Gemini,
+            "openai-compatible" => Provider::OpenAiCompatible,
+            "anthropic" => Provider::Anthropic,
             _ => Provider::OpenAi,
         }
     }
@@ -21,7 +25,9 @@ impl Provider {
     pub fn key_service(self) -> &'static str {
         match self {
             Provider::OpenAi => "openai",
+            Provider::OpenAiCompatible => "openai-compatible",
             Provider::Gemini => "gemini",
+            Provider::Anthropic => "anthropic",
         }
     }
 
@@ -29,8 +35,16 @@ impl Provider {
     pub fn label(self) -> &'static str {
         match self {
             Provider::OpenAi => "OpenAI",
+            Provider::OpenAiCompatible => "OpenAI Compatible",
             Provider::Gemini => "Gemini",
+            Provider::Anthropic => "Anthropic",
         }
+    }
+
+    /// Whether the API key is required (built-in providers require one; custom
+    /// endpoints may run local models without auth).
+    pub fn key_required(self) -> bool {
+        matches!(self, Provider::OpenAi | Provider::Gemini)
     }
 }
 
@@ -43,6 +57,10 @@ mod tests {
         assert_eq!(Provider::from_setting("gemini"), Provider::Gemini);
         assert_eq!(Provider::from_setting("  GEMINI "), Provider::Gemini);
         assert_eq!(Provider::from_setting("openai"), Provider::OpenAi);
+        assert_eq!(Provider::from_setting("openai-compatible"), Provider::OpenAiCompatible);
+        assert_eq!(Provider::from_setting("  OpenAI-Compatible "), Provider::OpenAiCompatible);
+        assert_eq!(Provider::from_setting("anthropic"), Provider::Anthropic);
+        assert_eq!(Provider::from_setting("AnThRoPiC"), Provider::Anthropic);
         assert_eq!(Provider::from_setting(""), Provider::OpenAi);
         assert_eq!(Provider::from_setting("something-else"), Provider::OpenAi);
     }
@@ -50,6 +68,16 @@ mod tests {
     #[test]
     fn provider_exposes_keychain_service_names() {
         assert_eq!(Provider::OpenAi.key_service(), "openai");
+        assert_eq!(Provider::OpenAiCompatible.key_service(), "openai-compatible");
         assert_eq!(Provider::Gemini.key_service(), "gemini");
+        assert_eq!(Provider::Anthropic.key_service(), "anthropic");
+    }
+
+    #[test]
+    fn provider_key_required_is_correct() {
+        assert!(Provider::OpenAi.key_required());
+        assert!(Provider::Gemini.key_required());
+        assert!(!Provider::OpenAiCompatible.key_required());
+        assert!(!Provider::Anthropic.key_required());
     }
 }

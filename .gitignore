@@ -28,3 +28,6 @@ dist-ssr
 
 # Claude Code project instructions — kept local, not tracked in the repo
 CLAUDE.md
+
+# Review reports — local only, not tracked
+docs/adversarial-review*.md

@@ -26,7 +26,7 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-const SCHEMA: &str = "
+pub(crate) const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -173,7 +173,7 @@ pub struct ChatMessage {
 }
 
 /// Tauri-managed handle to the SQLite database.
-pub struct Db(Mutex<Connection>);
+pub struct Db(pub(crate) Mutex<Connection>);
 
 impl Db {
     /// Open (creating if needed) the database at `path` and ensure the schema exists.
@@ -188,7 +188,7 @@ impl Db {
 /// Add columns introduced after the first release to pre-existing databases.
 /// Fresh databases already have them via `SCHEMA`; this keeps older `sososo.db`
 /// files in sync (SQLite has no `ADD COLUMN IF NOT EXISTS`).
-fn migrate(conn: &Connection) -> AppResult<()> {
+pub(crate) fn migrate(conn: &Connection) -> AppResult<()> {
     let existing = table_columns(conn, "sessions")?;
     for (name, ddl) in [
         ("summary", "ALTER TABLE sessions ADD COLUMN summary TEXT"),

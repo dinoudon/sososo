@@ -14,6 +14,7 @@
 //! Items). The output language is configurable (`"auto"` follows the transcript
 //! language, or a specific language name is requested).
 
+mod anthropic;
 mod gemini;
 mod openai;
 mod provider;
@@ -33,36 +34,78 @@ const SYSTEM_PROMPT: &str = "You are an assistant that summarizes meeting or con
 /// The full transcript is appended after this in the system message.
 const CHAT_SYSTEM_PROMPT: &str = "You are a helpful assistant answering questions about a meeting/conversation transcript. Use ONLY information present in the transcript — do not invent facts. If the answer is not in the transcript, say so clearly. In the transcript, \"You\" is the app user (microphone audio) and \"Other\" is the system/other participants' audio. Reply in the SAME language as the user's question. Keep answers concise; you may use simple Markdown (headings, **bold**, lists) for clarity.";
 
+/// Settings snapshot carried through all AI dispatch functions. Loaded once per
+/// command invocation so no DB read happens inside the network-await path.
+pub struct AiSettings {
+    pub provider: Provider,
+    pub api_key: Option<String>,
+    pub base_url: String,
+    pub model: String,
+}
+
 /// Provider-agnostic single-turn chat: given a system instruction + user content,
 /// returns the model's text reply and the model name used. Dispatches to the
-/// right transport based on `provider`.
+/// right transport based on `settings.provider` and uses the configurable
+/// base URL / model from `settings`.
 async fn chat(
-    provider: Provider,
-    api_key: &str,
+    settings: &AiSettings,
     system: &str,
     user: &str,
     temperature: f32,
     timeout: Duration,
 ) -> AppResult<(String, String)> {
-    match provider {
-        Provider::OpenAi => {
-            let text = openai::openai_chat(api_key, system, user, temperature, timeout).await?;
-            Ok((text, openai::OPENAI_MODEL.to_string()))
+    let model = settings.model.clone();
+    match settings.provider {
+        Provider::OpenAi | Provider::OpenAiCompatible => {
+            let text = openai::openai_chat_with_config(
+                settings.api_key.as_deref(),
+                serde_json::json!([
+                    { "role": "system", "content": system },
+                    { "role": "user", "content": user },
+                ]),
+                temperature,
+                timeout,
+                &settings.base_url,
+                &settings.model,
+            )
+            .await?;
+            Ok((text, model))
         }
         Provider::Gemini => {
-            let text = gemini::gemini_chat(api_key, system, user, temperature, timeout).await?;
-            Ok((text, gemini::GEMINI_MODEL.to_string()))
+            let key = settings.api_key.as_deref().ok_or_else(|| {
+                crate::error::AppError::Config("Gemini API key is not set".into())
+            })?;
+            let text = gemini::gemini_generate_with_config(
+                key,
+                system,
+                serde_json::json!([{ "role": "user", "parts": [{ "text": user }] }]),
+                temperature,
+                timeout,
+                &settings.model,
+            )
+            .await?;
+            Ok((text, model))
+        }
+        Provider::Anthropic => {
+            let text = anthropic::anthropic_chat(
+                settings.api_key.as_deref(),
+                system,
+                user,
+                temperature,
+                timeout,
+                &settings.base_url,
+                &settings.model,
+            )
+            .await?;
+            Ok((text, model))
         }
     }
 }
 
-/// Generate a summary of the transcript via `provider`. `summary_language` is the
-/// desired output language: the literal `"auto"` (match the transcript's language)
-/// or a human-readable language name like `"English"` / `"Indonesian"`. Returns
+/// Generate a summary of the transcript via the configured provider. Returns
 /// `(summary_markdown, model_used)`.
 pub async fn summarize(
-    provider: Provider,
-    api_key: &str,
+    settings: &AiSettings,
     title: &str,
     language: &str,
     summary_language: &str,
@@ -97,8 +140,7 @@ pub async fn summarize(
     );
 
     chat(
-        provider,
-        api_key,
+        settings,
         SYSTEM_PROMPT,
         &user_prompt,
         0.3,
@@ -108,15 +150,14 @@ pub async fn summarize(
 }
 
 /// Translate a single finalized transcript line into `target_language` (a
-/// human-readable name like "English") via `provider`. Returns ONLY the
-/// translated text.
+/// human-readable name like "English") via the configured provider. Returns ONLY
+/// the translated text.
 ///
 /// Invoked by the `translate_segment` command for live, per-segment translation,
 /// so it is kept lightweight: a short timeout (it runs many times per session)
 /// and a low temperature for faithful output.
 pub async fn translate(
-    provider: Provider,
-    api_key: &str,
+    settings: &AiSettings,
     text: &str,
     target_language: &str,
 ) -> AppResult<String> {
@@ -133,8 +174,7 @@ pub async fn translate(
     );
 
     let (translated, _model) = chat(
-        provider,
-        api_key,
+        settings,
         &system_prompt,
         text,
         0.2,
@@ -159,8 +199,7 @@ pub struct ChatTurn {
 /// Like [`summarize`], this performs a single non-streaming request. Temperature is
 /// a touch higher than summaries for more natural answers, with a 60s timeout.
 pub async fn chat_about_transcript(
-    provider: Provider,
-    api_key: &str,
+    settings: &AiSettings,
     title: &str,
     segments: &[StoredSegment],
     history: &[ChatTurn],
@@ -181,47 +220,67 @@ pub async fn chat_about_transcript(
         format!("{CHAT_SYSTEM_PROMPT}\n\nSession title: {title}\n\nTranscript:\n{transcript}");
     let temperature = 0.4;
     let timeout = Duration::from_secs(60);
+    let model = settings.model.clone();
 
-    match provider {
-        Provider::OpenAi => {
+    match settings.provider {
+        Provider::OpenAi | Provider::OpenAiCompatible => {
             let mut messages: Vec<serde_json::Value> = Vec::with_capacity(history.len() + 2);
             messages.push(serde_json::json!({ "role": "system", "content": system }));
             for turn in history {
                 messages.push(serde_json::json!({ "role": turn.role, "content": turn.content }));
             }
             messages.push(serde_json::json!({ "role": "user", "content": question }));
-            let text = openai::openai_chat_messages(
-                api_key,
+            let text = openai::openai_chat_with_config(
+                settings.api_key.as_deref(),
                 serde_json::Value::Array(messages),
                 temperature,
                 timeout,
+                &settings.base_url,
+                &settings.model,
             )
             .await?;
-            Ok((text, openai::OPENAI_MODEL.to_string()))
+            Ok((text, model))
         }
         Provider::Gemini => {
+            let key = settings.api_key.as_deref().ok_or_else(|| {
+                crate::error::AppError::Config("Gemini API key is not set".into())
+            })?;
             let mut contents: Vec<serde_json::Value> = Vec::with_capacity(history.len() + 1);
             for turn in history {
-                // Gemini names the assistant role "model"; the user role matches.
-                let role = if turn.role == "assistant" {
-                    "model"
-                } else {
-                    "user"
-                };
+                let role = if turn.role == "assistant" { "model" } else { "user" };
                 contents.push(
                     serde_json::json!({ "role": role, "parts": [ { "text": turn.content } ] }),
                 );
             }
             contents.push(serde_json::json!({ "role": "user", "parts": [ { "text": question } ] }));
-            let text = gemini::gemini_chat_messages(
-                api_key,
+            let text = gemini::gemini_generate_with_config(
+                key,
                 &system,
                 serde_json::Value::Array(contents),
                 temperature,
                 timeout,
+                &settings.model,
             )
             .await?;
-            Ok((text, gemini::GEMINI_MODEL.to_string()))
+            Ok((text, model))
+        }
+        Provider::Anthropic => {
+            let mut messages: Vec<serde_json::Value> = Vec::with_capacity(history.len() + 1);
+            for turn in history {
+                messages.push(serde_json::json!({ "role": turn.role, "content": turn.content }));
+            }
+            messages.push(serde_json::json!({ "role": "user", "content": question }));
+            let text = anthropic::anthropic_messages(
+                settings.api_key.as_deref(),
+                &system,
+                serde_json::Value::Array(messages),
+                temperature,
+                timeout,
+                &settings.base_url,
+                &settings.model,
+            )
+            .await?;
+            Ok((text, model))
         }
     }
 }

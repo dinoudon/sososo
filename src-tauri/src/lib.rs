@@ -45,6 +45,13 @@ pub fn run() {
             commands::get_chat_messages,
             commands::chat_session,
             commands::clear_chat,
+            commands::set_openai_model,
+            commands::set_gemini_model,
+            commands::set_openai_compatible_base_url,
+            commands::set_openai_compatible_model,
+            commands::set_anthropic_base_url,
+            commands::set_anthropic_model,
+            commands::get_ai_model_settings,
         ])
         .setup(|app| {
             // Open (creating if needed) the SQLite history database in the app

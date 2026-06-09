@@ -5,6 +5,7 @@
 
 use tauri::State;
 
+use crate::ai::Provider;
 use crate::db::{ChatMessage, Db};
 use crate::error::{AppError, AppResult};
 use crate::{ai, keys};
@@ -12,13 +13,58 @@ use crate::{ai, keys};
 /// `app_settings` key for the persisted AI-summary output-language preference.
 const SUMMARY_LANGUAGE_KEY: &str = "summary_language";
 
-/// `app_settings` key for the active AI provider ("openai" | "gemini").
+/// `app_settings` key for the active AI provider ("openai" | "openai-compatible" | "gemini" | "anthropic").
 const AI_PROVIDER_KEY: &str = "ai_provider";
+
+/// Defaults for AI settings keys. Not stored — the absence of a setting implies the default.
+const DEFAULT_OPENAI_MODEL: &str = "gpt-4o-mini";
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
+const DEFAULT_OPENAI_COMPATIBLE_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_OPENAI_COMPATIBLE_MODEL: &str = "gpt-4o-mini";
+const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
 
 /// How many of the most recent chat turns to send to the model per request. The
 /// full transcript is always sent as context, so older turns are dropped first to
 /// keep the prompt bounded.
 const CHAT_HISTORY_LIMIT: usize = 20;
+
+fn load_ai_settings_inner(db: &Db, provider: Provider, api_key: Option<String>) -> ai::AiSettings {
+    fn s(db: &Db, key: &str, default: &str) -> String {
+        db.get_setting(key)
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| default.to_string())
+    }
+
+    let (base_url, model) = match provider {
+        Provider::OpenAi => (
+            s(db, "openai_base_url", DEFAULT_OPENAI_BASE_URL),
+            s(db, "openai_model", DEFAULT_OPENAI_MODEL),
+        ),
+        Provider::OpenAiCompatible => (
+            s(db, "openai_compatible_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL),
+            s(db, "openai_compatible_model", DEFAULT_OPENAI_COMPATIBLE_MODEL),
+        ),
+        Provider::Gemini => (
+            String::new(),
+            s(db, "gemini_model", DEFAULT_GEMINI_MODEL),
+        ),
+        Provider::Anthropic => (
+            s(db, "anthropic_base_url", DEFAULT_ANTHROPIC_BASE_URL),
+            s(db, "anthropic_model", DEFAULT_ANTHROPIC_MODEL),
+        ),
+    };
+
+    ai::AiSettings {
+        provider,
+        api_key,
+        base_url,
+        model,
+    }
+}
 
 /// Read the persisted AI provider ("openai" | "gemini"). Defaults to "openai"
 /// when never set. Used by Settings to populate the provider dropdown.
@@ -29,32 +75,41 @@ pub fn get_ai_provider(db: State<'_, Db>) -> AppResult<String> {
         .unwrap_or_else(|| "openai".to_string()))
 }
 
-/// Persist the active AI provider. Only "openai" or "gemini" are accepted.
+/// Persist the active AI provider. "openai", "openai-compatible", "gemini",
+/// and "anthropic" are accepted.
 #[tauri::command]
 pub fn set_ai_provider(db: State<'_, Db>, provider: String) -> AppResult<()> {
     let normalized = match provider.trim().to_ascii_lowercase().as_str() {
         "gemini" => "gemini",
         "openai" => "openai",
+        "openai-compatible" => "openai-compatible",
+        "anthropic" => "anthropic",
         other => return Err(AppError::Config(format!("unknown AI provider: {other}"))),
     };
     db.set_setting(AI_PROVIDER_KEY, normalized)
 }
 
-/// Resolve the active AI provider and its API key (from the keychain). Reads the
-/// persisted setting synchronously — the returned key is owned, so callers never
-/// hold the DB lock across a network `await`.
-fn resolve_ai_provider(db: &Db) -> AppResult<(ai::Provider, String)> {
+/// Resolve the active AI provider, its API key (from the keychain), and all
+/// configurable settings (model name, base URL). Reads the persisted settings
+/// synchronously — the returned values are owned, so callers never hold the DB
+/// lock across a network `await`.
+///
+/// For built-in providers (OpenAI, Gemini) the API key is required. For custom
+/// endpoints (OpenAI Compatible, Anthropic) it is optional — local models may not
+/// need authentication.
+fn resolve_ai_provider(db: &Db) -> AppResult<ai::AiSettings> {
     let setting = db
         .get_setting(AI_PROVIDER_KEY)?
         .unwrap_or_else(|| "openai".to_string());
-    let provider = ai::Provider::from_setting(&setting);
-    let key = keys::get_api_key(provider.key_service())?.ok_or_else(|| {
-        AppError::Config(format!(
+    let provider = Provider::from_setting(&setting);
+    let api_key = keys::get_api_key(provider.key_service())?;
+    if provider.key_required() && api_key.is_none() {
+        return Err(AppError::Config(format!(
             "{} API key is not set (open Settings)",
             provider.label()
-        ))
-    })?;
-    Ok((provider, key))
+        )));
+    }
+    Ok(load_ai_settings_inner(db, provider, api_key))
 }
 
 /// Read the persisted AI-summary output language (a Deepgram language code or the
@@ -93,11 +148,10 @@ pub async fn summarize_session(
         return Err(AppError::Session("no transcript to summarize yet".into()));
     }
 
-    let (provider, key) = resolve_ai_provider(&db)?;
+    let settings = resolve_ai_provider(&db)?;
 
     let (summary, model) = ai::summarize(
-        provider,
-        &key,
+        &settings,
         &detail.session.title,
         &detail.session.language,
         &summary_language,
@@ -132,9 +186,9 @@ pub async fn translate_segment(
         }
     }
 
-    let (provider, key) = resolve_ai_provider(&db)?;
+    let settings = resolve_ai_provider(&db)?;
 
-    let translated = ai::translate(provider, &key, &text, &target_lang).await?;
+    let translated = ai::translate(&settings, &text, &target_lang).await?;
     db.save_translation(session_id, &segment_id, &translated, &target_lang)?;
     Ok(translated)
 }
@@ -174,7 +228,7 @@ pub async fn chat_session(
         return Err(AppError::Session("no transcript to chat about yet".into()));
     }
 
-    let (provider, key) = resolve_ai_provider(&db)?;
+    let settings = resolve_ai_provider(&db)?;
 
     // Send only the most recent turns (older ones dropped first) to bound tokens.
     let stored = db.get_chat_messages(id)?;
@@ -188,8 +242,7 @@ pub async fn chat_session(
         .collect();
 
     let (reply, model) = ai::chat_about_transcript(
-        provider,
-        &key,
+        &settings,
         &detail.session.title,
         &detail.segments,
         &history,
@@ -201,4 +254,221 @@ pub async fn chat_session(
     let user_msg = db.add_chat_message(id, "user", trimmed, None, &at)?;
     let assistant_msg = db.add_chat_message(id, "assistant", &reply, Some(&model), &at)?;
     Ok(vec![user_msg, assistant_msg])
+}
+
+// ── AI model / endpoint settings commands ──────────────────────────────
+
+fn validate_base_url(url: &str, label: &str) -> AppResult<()> {
+    if url.is_empty() {
+        return Ok(());
+    }
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return Ok(());
+    }
+    if lower.starts_with("http://localhost") || lower.starts_with("http://127.0.0.1") {
+        return Ok(());
+    }
+    Err(AppError::Config(format!(
+        "{label} base URL must use https:// or be a local http://localhost address"
+    )))
+}
+
+#[tauri::command]
+pub fn set_openai_model(db: State<'_, Db>, model: String) -> AppResult<()> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(AppError::Config("model name is required".into()));
+    }
+    db.set_setting("openai_model", model)
+}
+
+#[tauri::command]
+pub fn set_gemini_model(db: State<'_, Db>, model: String) -> AppResult<()> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(AppError::Config("model name is required".into()));
+    }
+    db.set_setting("gemini_model", model)
+}
+
+#[tauri::command]
+pub fn set_openai_compatible_base_url(db: State<'_, Db>, url: String) -> AppResult<()> {
+    let url = url.trim();
+    validate_base_url(url, "OpenAI Compatible")?;
+    db.set_setting("openai_compatible_base_url", if url.is_empty() { "https://api.openai.com/v1" } else { url })
+}
+
+#[tauri::command]
+pub fn set_openai_compatible_model(db: State<'_, Db>, model: String) -> AppResult<()> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(AppError::Config("model name is required".into()));
+    }
+    db.set_setting("openai_compatible_model", model)
+}
+
+#[tauri::command]
+pub fn set_anthropic_base_url(db: State<'_, Db>, url: String) -> AppResult<()> {
+    let url = url.trim();
+    validate_base_url(url, "Anthropic")?;
+    db.set_setting("anthropic_base_url", if url.is_empty() { "https://api.anthropic.com" } else { url })
+}
+
+#[tauri::command]
+pub fn set_anthropic_model(db: State<'_, Db>, model: String) -> AppResult<()> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(AppError::Config("model name is required".into()));
+    }
+    db.set_setting("anthropic_model", model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── validate_base_url ───────────────────────────────────────────
+
+    #[test]
+    fn validate_base_url_accepts_https() {
+        assert!(validate_base_url("https://api.openai.com/v1", "Test").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_accepts_localhost_http() {
+        assert!(validate_base_url("http://localhost:11434/v1", "Test").is_ok());
+        assert!(validate_base_url("http://127.0.0.1:11434", "Test").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_accepts_empty() {
+        assert!(validate_base_url("", "Test").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_non_local_http() {
+        assert!(validate_base_url("http://api.example.com", "Test").is_err());
+        assert!(validate_base_url("ftp://example.com", "Test").is_err());
+    }
+
+    #[test]
+    fn validate_base_url_error_includes_label() {
+        let err = validate_base_url("http://evil.com", "OpenAI Compatible").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("OpenAI Compatible"));
+        assert!(msg.contains("https://"));
+    }
+
+    // ── load_ai_settings_inner defaults ─────────────────────────────
+
+    fn mem_db() -> Db {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        crate::db::migrate(&conn).unwrap();
+        Db(std::sync::Mutex::new(conn))
+    }
+
+    #[test]
+    fn load_ai_settings_defaults_for_openai() {
+        let db = mem_db();
+        let settings = load_ai_settings_inner(&db, Provider::OpenAi, None);
+        assert_eq!(settings.provider, Provider::OpenAi);
+        assert_eq!(settings.model, "gpt-4o-mini");
+        assert_eq!(settings.base_url, "https://api.openai.com/v1");
+        assert!(settings.api_key.is_none());
+    }
+
+    #[test]
+    fn load_ai_settings_defaults_for_openai_compatible() {
+        let db = mem_db();
+        let settings = load_ai_settings_inner(&db, Provider::OpenAiCompatible, Some("sk-test".into()));
+        assert_eq!(settings.provider, Provider::OpenAiCompatible);
+        assert_eq!(settings.model, "gpt-4o-mini");
+        assert_eq!(settings.base_url, "https://api.openai.com/v1");
+        assert_eq!(settings.api_key.as_deref(), Some("sk-test"));
+    }
+
+    #[test]
+    fn load_ai_settings_defaults_for_anthropic() {
+        let db = mem_db();
+        let settings = load_ai_settings_inner(&db, Provider::Anthropic, Some("sk-ant-test".into()));
+        assert_eq!(settings.provider, Provider::Anthropic);
+        assert_eq!(settings.model, "claude-sonnet-4-20250514");
+        assert_eq!(settings.base_url, "https://api.anthropic.com");
+        assert_eq!(settings.api_key.as_deref(), Some("sk-ant-test"));
+    }
+
+    #[test]
+    fn load_ai_settings_defaults_for_gemini() {
+        let db = mem_db();
+        let settings = load_ai_settings_inner(&db, Provider::Gemini, Some("gemini-key".into()));
+        assert_eq!(settings.provider, Provider::Gemini);
+        assert_eq!(settings.model, "gemini-2.5-flash");
+        assert_eq!(settings.base_url, "");
+        assert_eq!(settings.api_key.as_deref(), Some("gemini-key"));
+    }
+
+    #[test]
+    fn load_ai_settings_custom_model_is_used() {
+        let db = mem_db();
+        db.set_setting("anthropic_model", "claude-opus-4").unwrap();
+        let settings = load_ai_settings_inner(&db, Provider::Anthropic, None);
+        assert_eq!(settings.model, "claude-opus-4");
+    }
+
+    #[test]
+    fn load_ai_settings_custom_base_url_is_used() {
+        let db = mem_db();
+        db.set_setting("anthropic_base_url", "https://api.anthropic.custom.com").unwrap();
+        let settings = load_ai_settings_inner(&db, Provider::Anthropic, None);
+        assert_eq!(settings.base_url, "https://api.anthropic.custom.com");
+    }
+
+    #[test]
+    fn load_ai_settings_ignores_empty_model_setting() {
+        let db = mem_db();
+        db.set_setting("anthropic_model", "").unwrap();
+        let settings = load_ai_settings_inner(&db, Provider::Anthropic, None);
+        assert_eq!(settings.model, "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn load_ai_settings_openai_compatible_custom_url() {
+        let db = mem_db();
+        db.set_setting("openai_compatible_base_url", "http://localhost:11434/v1").unwrap();
+        let settings = load_ai_settings_inner(&db, Provider::OpenAiCompatible, None);
+        assert_eq!(settings.base_url, "http://localhost:11434/v1");
+    }
+}
+
+/// Bulk-read all AI model/endpoint settings for the frontend settings UI.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModelSettings {
+    openai_model: String,
+    gemini_model: String,
+    openai_compatible_base_url: String,
+    openai_compatible_model: String,
+    anthropic_base_url: String,
+    anthropic_model: String,
+}
+
+#[tauri::command]
+pub fn get_ai_model_settings(db: State<'_, Db>) -> AppResult<AiModelSettings> {
+    fn s(db: &Db, key: &str, default: &str) -> String {
+        db.get_setting(key)
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| default.to_string())
+    }
+    Ok(AiModelSettings {
+        openai_model: s(&db, "openai_model", "gpt-4o-mini"),
+        gemini_model: s(&db, "gemini_model", "gemini-2.5-flash"),
+        openai_compatible_base_url: s(&db, "openai_compatible_base_url", "https://api.openai.com/v1"),
+        openai_compatible_model: s(&db, "openai_compatible_model", "gpt-4o-mini"),
+        anthropic_base_url: s(&db, "anthropic_base_url", "https://api.anthropic.com"),
+        anthropic_model: s(&db, "anthropic_model", "claude-sonnet-4-20250514"),
+    })
 }
