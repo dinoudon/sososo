@@ -57,6 +57,15 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
+      # The screencapturekit crate's Swift bridge (and its apple-* deps) target
+      # the newest macOS SDK; the runner's default Xcode (16.x, macOS 15 SDK) is
+      # too old to compile it, so select the latest stable Xcode instead.
+      - name: Select latest Xcode
+        if: matrix.os == 'macos-latest'
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -130,3 +139,21 @@ jobs:
           # people browsing the downloads. `latest.json` is still uploaded
           # (uploadUpdaterJson defaults to true), so auto-update is unaffected.
           uploadUpdaterSignatures: false
+
+      # `uploadUpdaterSignatures: false` has not actually kept the `.sig` files
+      # off the release (they were attached on v0.7.1 and v0.8.0 regardless), so
+      # sweep them explicitly. Runs on every leg — the matrix is serialized, so
+      # the last leg leaves the release clean; idempotent if none are present.
+      - name: Remove standalone .sig assets
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name | select(endswith(".sig"))' |
+          while read -r asset; do
+            echo "deleting $asset"
+            gh release delete-asset "$GITHUB_REF_NAME" "$asset" \
+              --repo "$GITHUB_REPOSITORY" -y
+          done

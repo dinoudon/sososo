@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-10
+
+### Added
+
+- **Video recording of a meeting window (Windows & macOS).** A session can now
+  also record a chosen application window — a Zoom window, a browser meeting
+  tab, any app — to an **MP4 saved with the session**, so a recording produces
+  both a transcript _and_ a video. Enable **"Record video of a window"** on the
+  Start screen and pick the window from the list (with a refresh button); the
+  existing Start/Pause/Finish controls drive audio transcription and video
+  together, and a **REC** badge shows in the recording widget while video is on.
+- **Video audio follows the capture mode.** In **Meeting** mode the MP4's audio
+  track is your microphone mixed with the system audio (use headphones — on
+  speakers the mic re-records the system sound); in **System only** mode the
+  video records system audio alone (no mic), so videos/music aren't doubled.
+- **Playback in the session detail.** Sessions with a recording show a built-in
+  video player above the AI summary (served via Tauri's asset protocol). The
+  MP4 lives in the app data folder under `recordings/` and the saved path is
+  stored with the session; a session that recorded video is kept even if it
+  produced no transcript lines.
+- **Live transcription loading & transitional states.** The recording widget now
+  shows meaningful connecting/listening/finishing states instead of a blank
+  panel while the Deepgram session spins up or winds down.
+- Licensing & IP-protection docs: `LICENSING.md`, `COMMERCIAL-LICENSE.md`
+  (commercial-terms outline), `TRADEMARK.md` (the "sososo" name/logo are
+  reserved marks — forks must rebrand), `CLA.md` (Contributor License Agreement,
+  required so the project can keep dual-licensing), plus `NOTICE` and `AUTHORS`.
+- `SPDX-License-Identifier: AGPL-3.0-only` headers on source files, and a CLA /
+  DCO `Signed-off-by` requirement in `CONTRIBUTING.md`.
+
 ### Changed
 
 - **Relicensed from MIT to GNU AGPL-3.0, and the project is now dual-licensed.**
@@ -15,15 +45,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **commercial license** is available for proprietary use without the AGPL
   obligations. See `LICENSING.md` and `COMMERCIAL-LICENSE.md`. This change is not
   retroactive — code already published under MIT remains available under MIT.
+- **macOS now requires macOS 12.3 or newer** (was 11.0): the app links Apple's
+  ScreenCaptureKit framework for video recording. Recording itself needs
+  **macOS 15+** (ScreenCaptureKit direct-to-file + microphone capture) and the
+  **Screen Recording** permission; on older systems the rest of the app —
+  transcription, summaries, history — keeps working and video recording reports
+  a clear error. macOS video recording has not yet been verified on hardware
+  (it compiles and passes CI); treat it as **experimental** in this release.
 
-### Added
+### Platform / implementation notes
 
-- Licensing & IP-protection docs: `LICENSING.md`, `COMMERCIAL-LICENSE.md`
-  (commercial-terms outline), `TRADEMARK.md` (the "sososo" name/logo are
-  reserved marks — forks must rebrand), `CLA.md` (Contributor License Agreement,
-  required so the project can keep dual-licensing), plus `NOTICE` and `AUTHORS`.
-- `SPDX-License-Identifier: AGPL-3.0-only` headers on source files, and a CLA /
-  DCO `Signed-off-by` requirement in `CONTRIBUTING.md`.
+- **Windows capture quality:** recording uses Windows.Graphics.Capture with a
+  vendored, locally patched `windows-capture` — the capture frame pool now has
+  3 buffers and every frame is copied to a fresh GPU texture before encoding,
+  eliminating the flicker/tearing ("broken TV" frames) of the stock encoder;
+  capture is capped at 30 fps and encodes H.264 + AAC via Media Foundation.
+- **Audio mixing (Windows):** the video's 48 kHz mic+system mix only pairs
+  available samples and silence-pads beyond ~100 ms of clock drift, fixing the
+  crackle that naive per-frame padding caused; sums saturate instead of
+  wrapping. The 16 kHz Deepgram transcription pipeline is untouched.
+- **macOS:** ScreenCaptureKit `SCRecordingOutput` records straight to MP4 (the
+  OS encodes and muxes); the app binary now embeds the Swift-runtime rpaths it
+  needs to load, and CI/release select the latest stable Xcode for the Swift
+  bridge.
+- Linux video recording is **not** included in this release (the capture stack
+  there — xdg-desktop-portal + PipeWire — is a separate effort); the video
+  controls are hidden on Linux and audio transcription is unaffected.
+
+### Internal
+
+- New cfg-gated `src-tauri/src/video/` module (Windows / macOS / stub), DB
+  migration adding `sessions.video_path`, `list_windows` / `set_video_options`
+  commands, and CI that now compiles and tests all three OS backends (with an
+  extra Intel-macOS check for the universal build).
 
 ## [0.7.1] - 2026-06-07
 
@@ -198,7 +252,8 @@ First public release. **Windows only** — macOS and Linux are not yet tested.
 - Formatting SOP — Prettier (with Tailwind class sorting) + rustfmt, enforced by
   a Husky pre-commit hook — plus CI and a Windows release workflow.
 
-[unreleased]: https://github.com/yusupsupriyadi/sososo/compare/v0.7.1...HEAD
+[unreleased]: https://github.com/yusupsupriyadi/sososo/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/yusupsupriyadi/sososo/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/yusupsupriyadi/sososo/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/yusupsupriyadi/sososo/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/yusupsupriyadi/sososo/compare/v0.5.0...v0.6.0

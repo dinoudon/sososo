@@ -1,7 +1,7 @@
 {
   "name": "sososo",
   "private": true,
-  "version": "0.7.1",
+  "version": "0.8.0",
   "type": "module",
   "license": "AGPL-3.0-only",
   "scripts": {
@@ -20,7 +20,7 @@
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,json,jsonc,css,md,html,yml,yaml}": "prettier --write",
-    "src-tauri/**/*.rs": "rustfmt --edition 2021"
+    "src-tauri/!(vendor)/**/*.rs": "rustfmt --edition 2021"
   },
   "dependencies": {
     "@hugeicons/core-free-icons": "^4.2.0",
