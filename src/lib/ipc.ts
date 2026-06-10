@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  AiModelSettings,
   AiProvider,
   ApiService,
   ChatMessage,
@@ -83,13 +84,33 @@ export const getSummaryLanguage = (): Promise<string> => invoke('get_summary_lan
 export const setSummaryLanguage = (language: string): Promise<void> =>
   invoke('set_summary_language', { language });
 
-/** Read the active AI provider ("openai" | "gemini"). Defaults to "openai". */
+/** Read the active AI provider. Defaults to "openai". */
 export const getAiProvider = (): Promise<AiProvider> => invoke('get_ai_provider');
 
-/** Persist the active AI provider ("openai" | "gemini"). Governs both session
- *  summaries and live translation. */
+/** Persist the active AI provider. Governs both session summaries and live translation. */
 export const setAiProvider = (provider: AiProvider): Promise<void> =>
   invoke('set_ai_provider', { provider });
+
+/** Bulk-read all AI model / endpoint settings (model names + base URLs). */
+export const getAiModelSettings = (): Promise<AiModelSettings> => invoke('get_ai_model_settings');
+
+/** Fetch the list of model IDs available for the currently-active provider.
+ *  Rejects if the API key is missing or the network call fails — callers should
+ *  fall back gracefully. */
+export const listAiModels = (): Promise<string[]> => invoke('list_ai_models');
+
+export const setOpenaiModel = (model: string): Promise<void> =>
+  invoke('set_openai_model', { model });
+export const setGeminiModel = (model: string): Promise<void> =>
+  invoke('set_gemini_model', { model });
+export const setOpenaiCompatibleBaseUrl = (url: string): Promise<void> =>
+  invoke('set_openai_compatible_base_url', { url });
+export const setOpenaiCompatibleModel = (model: string): Promise<void> =>
+  invoke('set_openai_compatible_model', { model });
+export const setAnthropicBaseUrl = (url: string): Promise<void> =>
+  invoke('set_anthropic_base_url', { url });
+export const setAnthropicModel = (model: string): Promise<void> =>
+  invoke('set_anthropic_model', { model });
 
 /** Generate + persist an AI summary for a session; resolves to the Markdown text.
  *  `summaryLanguage` is the literal "auto" (match the transcript) or a

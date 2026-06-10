@@ -58,10 +58,20 @@ export interface StopResult {
   endedAt: string;
 }
 
-export type ApiService = 'deepgram' | 'openai' | 'gemini';
+export type ApiService = 'deepgram' | 'openai' | 'openai-compatible' | 'gemini' | 'anthropic';
 
 /** Which AI backend powers session summaries + live translation. */
-export type AiProvider = 'openai' | 'gemini';
+export type AiProvider = 'openai' | 'openai-compatible' | 'gemini' | 'anthropic';
+
+/** Bulk model/endpoint settings returned by get_ai_model_settings. */
+export interface AiModelSettings {
+  openaiModel: string;
+  geminiModel: string;
+  openaiCompatibleBaseUrl: string;
+  openaiCompatibleModel: string;
+  anthropicBaseUrl: string;
+  anthropicModel: string;
+}
 
 // --- Session history (persisted) ---
 

@@ -55,6 +55,7 @@ pub fn run() {
             commands::set_anthropic_base_url,
             commands::set_anthropic_model,
             commands::get_ai_model_settings,
+            commands::list_ai_models,
         ])
         .setup(|app| {
             // Open (creating if needed) the SQLite history database in the app

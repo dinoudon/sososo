@@ -98,6 +98,7 @@ pub(crate) async fn openai_chat_with_config(
     let body = serde_json::json!({
         "model": model,
         "temperature": temperature,
+        "stream": false,
         "messages": messages,
     });
 
@@ -135,6 +136,47 @@ pub(crate) async fn openai_chat_with_config(
         .map(|c| c.message.content.trim().to_string())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::Ai("OpenAI returned no content".into()))
+}
+
+/// List available models from an OpenAI-compatible `/v1/models` endpoint.
+/// Returns model IDs sorted alphabetically. When `api_key` is `None`, the
+/// Authorization header is omitted (for local endpoints without auth).
+pub(crate) async fn list_models(
+    api_key: Option<&str>,
+    base_url: &str,
+    timeout: Duration,
+) -> AppResult<Vec<String>> {
+    #[derive(Deserialize)]
+    struct ModelsResponse {
+        data: Vec<ModelObject>,
+    }
+    #[derive(Deserialize)]
+    struct ModelObject {
+        id: String,
+    }
+
+    let endpoint = format!("{}/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder().timeout(timeout).build()?;
+    let mut req = client.get(&endpoint);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    let raw = resp.text().await?;
+    if !status.is_success() {
+        let detail = serde_json::from_str::<OpenAiErrorEnvelope>(&raw)
+            .map(|e| e.error.message)
+            .unwrap_or_else(|_| raw.chars().take(200).collect());
+        return Err(AppError::Ai(format!(
+            "models list failed ({status}): {detail}"
+        )));
+    }
+    let parsed: ModelsResponse = serde_json::from_str(&raw)
+        .map_err(|e| AppError::Ai(format!("could not parse models list: {e}")))?;
+    let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
+    ids.sort();
+    Ok(ids)
 }
 
 #[cfg(test)]

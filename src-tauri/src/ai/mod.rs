@@ -173,14 +173,8 @@ pub async fn translate(
          {target_language}, return it unchanged."
     );
 
-    let (translated, _model) = chat(
-        settings,
-        &system_prompt,
-        text,
-        0.2,
-        Duration::from_secs(30),
-    )
-    .await?;
+    let (translated, _model) =
+        chat(settings, &system_prompt, text, 0.2, Duration::from_secs(30)).await?;
     Ok(translated)
 }
 
@@ -247,7 +241,11 @@ pub async fn chat_about_transcript(
             })?;
             let mut contents: Vec<serde_json::Value> = Vec::with_capacity(history.len() + 1);
             for turn in history {
-                let role = if turn.role == "assistant" { "model" } else { "user" };
+                let role = if turn.role == "assistant" {
+                    "model"
+                } else {
+                    "user"
+                };
                 contents.push(
                     serde_json::json!({ "role": role, "parts": [ { "text": turn.content } ] }),
                 );
@@ -281,6 +279,25 @@ pub async fn chat_about_transcript(
             )
             .await?;
             Ok((text, model))
+        }
+    }
+}
+
+/// Fetch the list of available model IDs for the configured provider.
+pub async fn list_models(settings: &AiSettings) -> AppResult<Vec<String>> {
+    let timeout = Duration::from_secs(10);
+    match settings.provider {
+        Provider::OpenAi | Provider::OpenAiCompatible => {
+            openai::list_models(settings.api_key.as_deref(), &settings.base_url, timeout).await
+        }
+        Provider::Gemini => {
+            let key = settings.api_key.as_deref().ok_or_else(|| {
+                crate::error::AppError::Config("Gemini API key is not set".into())
+            })?;
+            gemini::list_models(key, timeout).await
+        }
+        Provider::Anthropic => {
+            anthropic::list_models(settings.api_key.as_deref(), &settings.base_url, timeout).await
         }
     }
 }

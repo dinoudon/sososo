@@ -45,7 +45,16 @@ pub(crate) async fn anthropic_chat(
     model: &str,
 ) -> AppResult<String> {
     let messages = serde_json::json!([{ "role": "user", "content": user }]);
-    anthropic_messages(api_key, system, messages, temperature, timeout, base_url, model).await
+    anthropic_messages(
+        api_key,
+        system,
+        messages,
+        temperature,
+        timeout,
+        base_url,
+        model,
+    )
+    .await
 }
 
 /// Multi-turn Messages API transport given a fully-built `messages` array (for
@@ -65,12 +74,17 @@ pub(crate) async fn anthropic_messages(
     let endpoint = format!("{}/v1/messages", base_url.trim_end_matches('/'));
 
     // Anthropic requires temperature > 0; clamp if caller passes 0.
-    let temp = if temperature < 0.01 { 0.01 } else { temperature };
+    let temp = if temperature < 0.01 {
+        0.01
+    } else {
+        temperature
+    };
 
     let body = serde_json::json!({
         "model": model,
         "max_tokens": 1024,
         "temperature": temp,
+        "stream": false,
         "system": system,
         "messages": messages,
     });
@@ -114,6 +128,48 @@ pub(crate) async fn anthropic_messages(
         .ok_or_else(|| AppError::Ai("Anthropic returned no content".into()))
 }
 
+/// List available Anthropic models from the `/v1/models` endpoint, sorted
+/// alphabetically. When `api_key` is `None`, the header is omitted.
+pub(crate) async fn list_models(
+    api_key: Option<&str>,
+    base_url: &str,
+    timeout: Duration,
+) -> AppResult<Vec<String>> {
+    #[derive(Deserialize)]
+    struct ModelsResponse {
+        data: Vec<ModelObject>,
+    }
+    #[derive(Deserialize)]
+    struct ModelObject {
+        id: String,
+    }
+
+    let endpoint = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder().timeout(timeout).build()?;
+    let mut req = client
+        .get(&endpoint)
+        .header("anthropic-version", ANTHROPIC_VERSION);
+    if let Some(key) = api_key {
+        req = req.header("x-api-key", key);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    let raw = resp.text().await?;
+    if !status.is_success() {
+        let detail = serde_json::from_str::<AnthropicErrorEnvelope>(&raw)
+            .map(|e| e.error.message)
+            .unwrap_or_else(|_| raw.chars().take(200).collect());
+        return Err(AppError::Ai(format!(
+            "models list failed ({status}): {detail}"
+        )));
+    }
+    let parsed: ModelsResponse = serde_json::from_str(&raw)
+        .map_err(|e| AppError::Ai(format!("could not parse models list: {e}")))?;
+    let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
+    ids.sort();
+    Ok(ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,7 +189,8 @@ mod tests {
 
     #[test]
     fn parse_response_skips_tool_use_block() {
-        let json = r#"{"content":[{"type":"tool_use","name":"foo"},{"type":"text","text":"the answer"}]}"#;
+        let json =
+            r#"{"content":[{"type":"tool_use","name":"foo"},{"type":"text","text":"the answer"}]}"#;
         let parsed: AnthropicResponse = serde_json::from_str(json).unwrap();
         let text = parsed
             .content

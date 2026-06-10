@@ -3,13 +3,21 @@ import { HugeiconsIcon } from '@hugeicons/react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { getVersion } from '@tauri-apps/api/app';
 import {
+  getAiModelSettings,
   getAiProvider,
   getSummaryLanguage,
   hasApiKey,
+  listAiModels,
   listDevices,
+  setAnthropicBaseUrl,
+  setAnthropicModel,
   setAiProvider,
   setApiKey,
   setDevices,
+  setGeminiModel,
+  setOpenaiCompatibleBaseUrl,
+  setOpenaiCompatibleModel,
+  setOpenaiModel,
   setSummaryLanguage,
 } from '../../../lib/ipc';
 import { SUMMARY_LANGUAGES } from '../../../lib/languages';
@@ -18,6 +26,7 @@ import {
   IconAlert,
   IconCheck,
   IconDevices,
+  IconRegenerate,
   IconDownload,
   IconExternal,
   IconGift,
@@ -59,14 +68,28 @@ export default function SettingsRoute() {
   const [dgKey, setDgKey] = useState('');
   const [oaKey, setOaKey] = useState('');
   const [gmKey, setGmKey] = useState('');
+  const [ocKey, setOcKey] = useState(''); // openai-compatible (optional)
+  const [anKey, setAnKey] = useState(''); // anthropic (optional)
   const [dgSaved, setDgSaved] = useState(false);
   const [oaSaved, setOaSaved] = useState(false);
   const [gmSaved, setGmSaved] = useState(false);
+  const [ocSaved, setOcSaved] = useState(false);
+  const [anSaved, setAnSaved] = useState(false);
   const [status, setStatus] = useState('');
   // AI-summary output language ("auto" or a language code), persisted in the DB.
   const [summaryLang, setSummaryLang] = useState('auto');
-  // Active AI provider ("openai" | "gemini") for summaries + live translation, persisted in the DB.
+  // Active AI provider for summaries + live translation, persisted in the DB.
   const [aiProvider, setAiProviderState] = useState<AiProvider>('openai');
+  // Provider-specific model / endpoint settings.
+  const [openaiModel, setOpenaiModelState] = useState('gpt-4o-mini');
+  const [geminiModel, setGeminiModelState] = useState('gemini-2.5-flash');
+  const [ocBaseUrl, setOcBaseUrl] = useState('https://api.openai.com/v1');
+  const [ocModel, setOcModel] = useState('gpt-4o-mini');
+  const [anBaseUrl, setAnBaseUrl] = useState('https://api.anthropic.com');
+  const [anModel, setAnModel] = useState('claude-sonnet-4-20250514');
+  // Fetched model list for the active provider (null = not fetched yet).
+  const [modelList, setModelList] = useState<string[] | null>(null);
+  const [modelListLoading, setModelListLoading] = useState(false);
 
   // Device selection is shared with the Start-transcription screen via the config store.
   const inputDevice = useConfigStore((s) => s.inputDevice);
@@ -114,11 +137,30 @@ export default function SettingsRoute() {
     hasApiKey('gemini')
       .then(setGmSaved)
       .catch(() => {});
+    hasApiKey('openai-compatible')
+      .then(setOcSaved)
+      .catch(() => {});
+    hasApiKey('anthropic')
+      .then(setAnSaved)
+      .catch(() => {});
     getSummaryLanguage()
       .then(setSummaryLang)
       .catch(() => {});
     getAiProvider()
-      .then(setAiProviderState)
+      .then((p) => {
+        setAiProviderState(p);
+        void fetchModels();
+      })
+      .catch(() => {});
+    getAiModelSettings()
+      .then((s) => {
+        setOpenaiModelState(s.openaiModel);
+        setGeminiModelState(s.geminiModel);
+        setOcBaseUrl(s.openaiCompatibleBaseUrl);
+        setOcModel(s.openaiCompatibleModel);
+        setAnBaseUrl(s.anthropicBaseUrl);
+        setAnModel(s.anthropicModel);
+      })
       .catch(() => {});
   }, [setInputDevice, setOutputDevice]);
 
@@ -141,31 +183,65 @@ export default function SettingsRoute() {
     }
   }
 
+  async function fetchModels() {
+    setModelListLoading(true);
+    try {
+      const list = await listAiModels();
+      setModelList(list);
+    } catch {
+      setModelList([]); // empty = fetch failed; UI falls back to text input
+    } finally {
+      setModelListLoading(false);
+    }
+  }
+
   async function saveAiProvider(provider: AiProvider) {
     setAiProviderState(provider);
+    setModelList(null); // clear stale list from the previous provider
     try {
       await setAiProvider(provider);
       setStatus('AI provider saved.');
+      void fetchModels();
     } catch (e) {
       setStatus(`Error: ${e}`);
     }
   }
 
   async function saveKey(service: ApiService) {
-    const value = (service === 'deepgram' ? dgKey : service === 'openai' ? oaKey : gmKey).trim();
+    const keyMap: Record<ApiService, string> = {
+      deepgram: dgKey,
+      openai: oaKey,
+      gemini: gmKey,
+      'openai-compatible': ocKey,
+      anthropic: anKey,
+    };
+    const value = keyMap[service].trim();
     if (!value) return;
     try {
       await setApiKey(service, value);
-      if (service === 'deepgram') {
-        setDgKey('');
-        setDgSaved(true);
-      } else if (service === 'openai') {
-        setOaKey('');
-        setOaSaved(true);
-      } else {
-        setGmKey('');
-        setGmSaved(true);
-      }
+      const clearMap: Record<ApiService, () => void> = {
+        deepgram: () => {
+          setDgKey('');
+          setDgSaved(true);
+        },
+        openai: () => {
+          setOaKey('');
+          setOaSaved(true);
+        },
+        gemini: () => {
+          setGmKey('');
+          setGmSaved(true);
+        },
+        'openai-compatible': () => {
+          setOcKey('');
+          setOcSaved(true);
+        },
+        anthropic: () => {
+          setAnKey('');
+          setAnSaved(true);
+        },
+      };
+      clearMap[service]();
       setStatus(`${service} API key saved.`);
     } catch (e) {
       setStatus(`Error: ${e}`);
@@ -339,12 +415,251 @@ export default function SettingsRoute() {
             onChange={(e) => void saveAiProvider(e.target.value as AiProvider)}
           >
             <option value="openai">OpenAI</option>
+            <option value="openai-compatible">OpenAI Compatible (custom endpoint)</option>
             <option value="gemini">Gemini</option>
+            <option value="anthropic">Anthropic</option>
           </select>
           <span className="text-[11.5px] leading-[1.4] text-fg-faint">
             Powers AI session summaries and live translation. Set the matching API key above.
           </span>
         </label>
+
+        {/* Provider-specific model / endpoint settings */}
+        {(aiProvider === 'openai' ||
+          aiProvider === 'openai-compatible' ||
+          aiProvider === 'gemini' ||
+          aiProvider === 'anthropic') && (
+          <div className={FIELD}>
+            <span className={FIELD_LABEL}>
+              Model
+              {modelListLoading && (
+                <span className="ml-2 text-[11px] text-fg-faint">Fetching…</span>
+              )}
+              {!modelListLoading && modelList !== null && modelList.length > 0 && (
+                <span className="ml-2 text-[11px] text-fg-faint">{modelList.length} available</span>
+              )}
+            </span>
+            <div className="flex gap-2">
+              {modelList && modelList.length > 0 ? (
+                <select
+                  className={FIELD_CTRL}
+                  value={
+                    aiProvider === 'openai'
+                      ? openaiModel
+                      : aiProvider === 'gemini'
+                        ? geminiModel
+                        : aiProvider === 'openai-compatible'
+                          ? ocModel
+                          : anModel
+                  }
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (aiProvider === 'openai') setOpenaiModelState(v);
+                    else if (aiProvider === 'gemini') setGeminiModelState(v);
+                    else if (aiProvider === 'openai-compatible') setOcModel(v);
+                    else setAnModel(v);
+                  }}
+                >
+                  {(() => {
+                    const current =
+                      aiProvider === 'openai'
+                        ? openaiModel
+                        : aiProvider === 'gemini'
+                          ? geminiModel
+                          : aiProvider === 'openai-compatible'
+                            ? ocModel
+                            : anModel;
+                    return (
+                      <>
+                        {current && !modelList.includes(current) && (
+                          <option value={current}>{current} (custom)</option>
+                        )}
+                        {modelList.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </>
+                    );
+                  })()}
+                </select>
+              ) : (
+                <input
+                  className={FIELD_CTRL}
+                  value={
+                    aiProvider === 'openai'
+                      ? openaiModel
+                      : aiProvider === 'gemini'
+                        ? geminiModel
+                        : aiProvider === 'openai-compatible'
+                          ? ocModel
+                          : anModel
+                  }
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (aiProvider === 'openai') setOpenaiModelState(v);
+                    else if (aiProvider === 'gemini') setGeminiModelState(v);
+                    else if (aiProvider === 'openai-compatible') setOcModel(v);
+                    else setAnModel(v);
+                  }}
+                  placeholder={
+                    aiProvider === 'openai'
+                      ? 'gpt-4o-mini'
+                      : aiProvider === 'gemini'
+                        ? 'gemini-2.5-flash'
+                        : aiProvider === 'openai-compatible'
+                          ? 'gpt-4o-mini'
+                          : 'claude-sonnet-4-20250514'
+                  }
+                />
+              )}
+              <button
+                className={BTN}
+                onClick={() => {
+                  const save =
+                    aiProvider === 'openai'
+                      ? setOpenaiModel(openaiModel)
+                      : aiProvider === 'gemini'
+                        ? setGeminiModel(geminiModel)
+                        : aiProvider === 'openai-compatible'
+                          ? setOpenaiCompatibleModel(ocModel)
+                          : setAnthropicModel(anModel);
+                  void save
+                    .then(() => setStatus('Model saved.'))
+                    .catch((e: unknown) => setStatus(`Error: ${e}`));
+                }}
+              >
+                Save
+              </button>
+              <button
+                className={BTN}
+                disabled={modelListLoading}
+                onClick={() => void fetchModels()}
+                title="Refresh model list from provider"
+              >
+                <HugeiconsIcon icon={IconRegenerate} size={13} strokeWidth={2} aria-hidden={true} />
+              </button>
+            </div>
+            {!modelListLoading && modelList !== null && modelList.length === 0 && (
+              <span className="text-[11px] text-fg-faint">
+                Could not fetch model list — enter a model name manually, or check your API key and
+                base URL.
+              </span>
+            )}
+          </div>
+        )}
+
+        {aiProvider === 'openai-compatible' && (
+          <>
+            <label className={FIELD}>
+              <span className={FIELD_LABEL}>Base URL</span>
+              <div className="flex gap-2">
+                <input
+                  className={FIELD_CTRL}
+                  value={ocBaseUrl}
+                  onChange={(e) => setOcBaseUrl(e.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                />
+                <button
+                  className={BTN}
+                  onClick={() => {
+                    void setOpenaiCompatibleBaseUrl(ocBaseUrl)
+                      .then(() => {
+                        setStatus('Base URL saved.');
+                        void fetchModels();
+                      })
+                      .catch((e: unknown) => setStatus(`Error: ${e}`));
+                  }}
+                >
+                  Save
+                </button>
+              </div>
+              <span className="text-[11.5px] leading-[1.4] text-fg-faint">
+                Any endpoint that speaks the OpenAI Chat Completions API — Ollama, LM Studio, local
+                models.
+              </span>
+            </label>
+            <label className={FIELD}>
+              <span className={FIELD_LABEL}>
+                API Key (optional){' '}
+                {ocSaved && (
+                  <em className="ml-1.5 inline-flex items-center gap-1 text-[11.5px] text-ok not-italic">
+                    <HugeiconsIcon icon={IconCheck} size={13} strokeWidth={2} aria-hidden={true} />
+                    saved
+                  </em>
+                )}
+              </span>
+              <div className="flex gap-2">
+                <input
+                  className={FIELD_CTRL}
+                  type="password"
+                  value={ocKey}
+                  onChange={(e) => setOcKey(e.target.value)}
+                  placeholder={ocSaved ? '••••••••••••' : 'Leave blank for local endpoints…'}
+                />
+                <button className={BTN} onClick={() => void saveKey('openai-compatible')}>
+                  Save
+                </button>
+              </div>
+            </label>
+          </>
+        )}
+
+        {aiProvider === 'anthropic' && (
+          <>
+            <label className={FIELD}>
+              <span className={FIELD_LABEL}>Base URL</span>
+              <div className="flex gap-2">
+                <input
+                  className={FIELD_CTRL}
+                  value={anBaseUrl}
+                  onChange={(e) => setAnBaseUrl(e.target.value)}
+                  placeholder="https://api.anthropic.com"
+                />
+                <button
+                  className={BTN}
+                  onClick={() => {
+                    void setAnthropicBaseUrl(anBaseUrl)
+                      .then(() => {
+                        setStatus('Base URL saved.');
+                        void fetchModels();
+                      })
+                      .catch((e: unknown) => setStatus(`Error: ${e}`));
+                  }}
+                >
+                  Save
+                </button>
+              </div>
+              <span className="text-[11.5px] leading-[1.4] text-fg-faint">
+                Leave as default for Anthropic's cloud API, or point to an Anthropic-compatible
+                local endpoint.
+              </span>
+            </label>
+            <label className={FIELD}>
+              <span className={FIELD_LABEL}>
+                API Key (optional){' '}
+                {anSaved && (
+                  <em className="ml-1.5 inline-flex items-center gap-1 text-[11.5px] text-ok not-italic">
+                    <HugeiconsIcon icon={IconCheck} size={13} strokeWidth={2} aria-hidden={true} />
+                    saved
+                  </em>
+                )}
+              </span>
+              <div className="flex gap-2">
+                <input
+                  className={FIELD_CTRL}
+                  type="password"
+                  value={anKey}
+                  onChange={(e) => setAnKey(e.target.value)}
+                  placeholder={anSaved ? '••••••••••••' : 'sk-ant-…'}
+                />
+                <button className={BTN} onClick={() => void saveKey('anthropic')}>
+                  Save
+                </button>
+              </div>
+            </label>
+          </>
+        )}
         <label className="mb-3.5 flex cursor-pointer items-start gap-2.5">
           <input
             type="checkbox"

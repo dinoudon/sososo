@@ -56,8 +56,15 @@ pub(crate) async fn gemini_chat(
     timeout: Duration,
 ) -> AppResult<String> {
     let contents = serde_json::json!([ { "role": "user", "parts": [ { "text": user } ] } ]);
-    gemini_generate_with_config(api_key, system, contents, temperature, timeout, GEMINI_MODEL)
-        .await
+    gemini_generate_with_config(
+        api_key,
+        system,
+        contents,
+        temperature,
+        timeout,
+        GEMINI_MODEL,
+    )
+    .await
 }
 
 /// Gemini `generateContent` transport given a fully-built `contents` array — the
@@ -70,8 +77,15 @@ pub(crate) async fn gemini_chat_messages(
     temperature: f32,
     timeout: Duration,
 ) -> AppResult<String> {
-    gemini_generate_with_config(api_key, system, contents, temperature, timeout, GEMINI_MODEL)
-        .await
+    gemini_generate_with_config(
+        api_key,
+        system,
+        contents,
+        temperature,
+        timeout,
+        GEMINI_MODEL,
+    )
+    .await
 }
 
 /// Gemini `generateContent` transport with runtime-configurable model name. Note
@@ -129,6 +143,57 @@ pub(crate) async fn gemini_generate_with_config(
         .map(|p| p.text.trim().to_string())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::Ai("Gemini returned no content".into()))
+}
+
+/// List Gemini models that support `generateContent`, sorted alphabetically.
+/// Uses the `v1beta/models` list endpoint with the API key as a query param.
+pub(crate) async fn list_models(api_key: &str, timeout: Duration) -> AppResult<Vec<String>> {
+    #[derive(Deserialize)]
+    struct ModelsListResponse {
+        #[serde(default)]
+        models: Vec<GeminiModelInfo>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct GeminiModelInfo {
+        name: String,
+        #[serde(default)]
+        supported_generation_methods: Vec<String>,
+    }
+
+    // GEMINI_ENDPOINT_BASE ends with "/models" — the list endpoint is that URL + key param.
+    let url = format!("{GEMINI_ENDPOINT_BASE}?key={api_key}");
+    let client = reqwest::Client::builder().timeout(timeout).build()?;
+    let resp = client.get(&url).send().await?;
+    let status = resp.status();
+    let raw = resp.text().await?;
+    if !status.is_success() {
+        let detail = serde_json::from_str::<GeminiErrorEnvelope>(&raw)
+            .map(|e| e.error.message)
+            .unwrap_or_else(|_| raw.chars().take(200).collect::<String>());
+        return Err(AppError::Ai(format!(
+            "models list failed ({status}): {detail}"
+        )));
+    }
+    let parsed: ModelsListResponse = serde_json::from_str(&raw)
+        .map_err(|e| AppError::Ai(format!("could not parse models list: {e}")))?;
+    let mut ids: Vec<String> = parsed
+        .models
+        .into_iter()
+        .filter(|m| {
+            m.supported_generation_methods
+                .iter()
+                .any(|s| s == "generateContent")
+        })
+        .map(|m| {
+            m.name
+                .strip_prefix("models/")
+                .unwrap_or(&m.name)
+                .to_string()
+        })
+        .collect();
+    ids.sort();
+    Ok(ids)
 }
 
 #[cfg(test)]

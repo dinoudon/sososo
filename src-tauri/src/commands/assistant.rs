@@ -30,31 +30,33 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
 /// keep the prompt bounded.
 const CHAT_HISTORY_LIMIT: usize = 20;
 
+fn read_setting(db: &Db, key: &str, default: &str) -> String {
+    db.get_setting(key)
+        .ok()
+        .flatten()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
 fn load_ai_settings_inner(db: &Db, provider: Provider, api_key: Option<String>) -> ai::AiSettings {
-    fn s(db: &Db, key: &str, default: &str) -> String {
-        db.get_setting(key)
-            .ok()
-            .flatten()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| default.to_string())
-    }
+    let s = |key, default| read_setting(db, key, default);
 
     let (base_url, model) = match provider {
         Provider::OpenAi => (
-            s(db, "openai_base_url", DEFAULT_OPENAI_BASE_URL),
-            s(db, "openai_model", DEFAULT_OPENAI_MODEL),
+            s("openai_base_url", DEFAULT_OPENAI_BASE_URL),
+            s("openai_model", DEFAULT_OPENAI_MODEL),
         ),
         Provider::OpenAiCompatible => (
-            s(db, "openai_compatible_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL),
-            s(db, "openai_compatible_model", DEFAULT_OPENAI_COMPATIBLE_MODEL),
+            s(
+                "openai_compatible_base_url",
+                DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+            ),
+            s("openai_compatible_model", DEFAULT_OPENAI_COMPATIBLE_MODEL),
         ),
-        Provider::Gemini => (
-            String::new(),
-            s(db, "gemini_model", DEFAULT_GEMINI_MODEL),
-        ),
+        Provider::Gemini => (String::new(), s("gemini_model", DEFAULT_GEMINI_MODEL)),
         Provider::Anthropic => (
-            s(db, "anthropic_base_url", DEFAULT_ANTHROPIC_BASE_URL),
-            s(db, "anthropic_model", DEFAULT_ANTHROPIC_MODEL),
+            s("anthropic_base_url", DEFAULT_ANTHROPIC_BASE_URL),
+            s("anthropic_model", DEFAULT_ANTHROPIC_MODEL),
         ),
     };
 
@@ -296,7 +298,14 @@ pub fn set_gemini_model(db: State<'_, Db>, model: String) -> AppResult<()> {
 pub fn set_openai_compatible_base_url(db: State<'_, Db>, url: String) -> AppResult<()> {
     let url = url.trim();
     validate_base_url(url, "OpenAI Compatible")?;
-    db.set_setting("openai_compatible_base_url", if url.is_empty() { "https://api.openai.com/v1" } else { url })
+    db.set_setting(
+        "openai_compatible_base_url",
+        if url.is_empty() {
+            DEFAULT_OPENAI_COMPATIBLE_BASE_URL
+        } else {
+            url
+        },
+    )
 }
 
 #[tauri::command]
@@ -312,7 +321,14 @@ pub fn set_openai_compatible_model(db: State<'_, Db>, model: String) -> AppResul
 pub fn set_anthropic_base_url(db: State<'_, Db>, url: String) -> AppResult<()> {
     let url = url.trim();
     validate_base_url(url, "Anthropic")?;
-    db.set_setting("anthropic_base_url", if url.is_empty() { "https://api.anthropic.com" } else { url })
+    db.set_setting(
+        "anthropic_base_url",
+        if url.is_empty() {
+            DEFAULT_ANTHROPIC_BASE_URL
+        } else {
+            url
+        },
+    )
 }
 
 #[tauri::command]
@@ -382,7 +398,8 @@ mod tests {
     #[test]
     fn load_ai_settings_defaults_for_openai_compatible() {
         let db = mem_db();
-        let settings = load_ai_settings_inner(&db, Provider::OpenAiCompatible, Some("sk-test".into()));
+        let settings =
+            load_ai_settings_inner(&db, Provider::OpenAiCompatible, Some("sk-test".into()));
         assert_eq!(settings.provider, Provider::OpenAiCompatible);
         assert_eq!(settings.model, "gpt-4o-mini");
         assert_eq!(settings.base_url, "https://api.openai.com/v1");
@@ -420,7 +437,8 @@ mod tests {
     #[test]
     fn load_ai_settings_custom_base_url_is_used() {
         let db = mem_db();
-        db.set_setting("anthropic_base_url", "https://api.anthropic.custom.com").unwrap();
+        db.set_setting("anthropic_base_url", "https://api.anthropic.custom.com")
+            .unwrap();
         let settings = load_ai_settings_inner(&db, Provider::Anthropic, None);
         assert_eq!(settings.base_url, "https://api.anthropic.custom.com");
     }
@@ -436,7 +454,8 @@ mod tests {
     #[test]
     fn load_ai_settings_openai_compatible_custom_url() {
         let db = mem_db();
-        db.set_setting("openai_compatible_base_url", "http://localhost:11434/v1").unwrap();
+        db.set_setting("openai_compatible_base_url", "http://localhost:11434/v1")
+            .unwrap();
         let settings = load_ai_settings_inner(&db, Provider::OpenAiCompatible, None);
         assert_eq!(settings.base_url, "http://localhost:11434/v1");
     }
@@ -456,19 +475,26 @@ pub struct AiModelSettings {
 
 #[tauri::command]
 pub fn get_ai_model_settings(db: State<'_, Db>) -> AppResult<AiModelSettings> {
-    fn s(db: &Db, key: &str, default: &str) -> String {
-        db.get_setting(key)
-            .ok()
-            .flatten()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| default.to_string())
-    }
+    let s = |key, default| read_setting(&db, key, default);
     Ok(AiModelSettings {
-        openai_model: s(&db, "openai_model", "gpt-4o-mini"),
-        gemini_model: s(&db, "gemini_model", "gemini-2.5-flash"),
-        openai_compatible_base_url: s(&db, "openai_compatible_base_url", "https://api.openai.com/v1"),
-        openai_compatible_model: s(&db, "openai_compatible_model", "gpt-4o-mini"),
-        anthropic_base_url: s(&db, "anthropic_base_url", "https://api.anthropic.com"),
-        anthropic_model: s(&db, "anthropic_model", "claude-sonnet-4-20250514"),
+        openai_model: s("openai_model", DEFAULT_OPENAI_MODEL),
+        gemini_model: s("gemini_model", DEFAULT_GEMINI_MODEL),
+        openai_compatible_base_url: s(
+            "openai_compatible_base_url",
+            DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+        ),
+        openai_compatible_model: s("openai_compatible_model", DEFAULT_OPENAI_COMPATIBLE_MODEL),
+        anthropic_base_url: s("anthropic_base_url", DEFAULT_ANTHROPIC_BASE_URL),
+        anthropic_model: s("anthropic_model", DEFAULT_ANTHROPIC_MODEL),
     })
+}
+
+/// Fetch the list of model IDs available for the currently-configured AI provider.
+/// Uses the provider's API key and base URL from persisted settings. Returns an
+/// error (not a panic) if the key is missing or the API call fails — the frontend
+/// falls back to a free-text input in that case.
+#[tauri::command]
+pub async fn list_ai_models(db: State<'_, Db>) -> AppResult<Vec<String>> {
+    let settings = resolve_ai_provider(&db)?;
+    ai::list_models(&settings).await
 }
