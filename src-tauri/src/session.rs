@@ -154,7 +154,11 @@ async fn run_session(
             cancel.cancel();
             let _ = bridge.await;
             eprintln!("[session] Deepgram client error: {e}");
-            return fail(&app, session_id, "Deepgram: invalid API key or network error".into());
+            return fail(
+                &app,
+                session_id,
+                "Deepgram: invalid API key or network error".into(),
+            );
         }
     };
     let (model, lang) = model_language(&language);

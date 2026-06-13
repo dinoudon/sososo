@@ -31,3 +31,12 @@ CLAUDE.md
 
 # Review reports — local only, not tracked
 docs/adversarial-review*.md
+
+# Tool/agent working artifacts
+.commandcode/
+docs/handoff/
+docs/plans/
+rtk-cmdc-integration/
+rtk-explore/
+rtk-skill/
+rtk-windows.zip

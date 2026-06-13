@@ -57,8 +57,14 @@ mod tests {
         assert_eq!(Provider::from_setting("gemini"), Provider::Gemini);
         assert_eq!(Provider::from_setting("  GEMINI "), Provider::Gemini);
         assert_eq!(Provider::from_setting("openai"), Provider::OpenAi);
-        assert_eq!(Provider::from_setting("openai-compatible"), Provider::OpenAiCompatible);
-        assert_eq!(Provider::from_setting("  OpenAI-Compatible "), Provider::OpenAiCompatible);
+        assert_eq!(
+            Provider::from_setting("openai-compatible"),
+            Provider::OpenAiCompatible
+        );
+        assert_eq!(
+            Provider::from_setting("  OpenAI-Compatible "),
+            Provider::OpenAiCompatible
+        );
         assert_eq!(Provider::from_setting("anthropic"), Provider::Anthropic);
         assert_eq!(Provider::from_setting("AnThRoPiC"), Provider::Anthropic);
         assert_eq!(Provider::from_setting(""), Provider::OpenAi);
@@ -68,7 +74,10 @@ mod tests {
     #[test]
     fn provider_exposes_keychain_service_names() {
         assert_eq!(Provider::OpenAi.key_service(), "openai");
-        assert_eq!(Provider::OpenAiCompatible.key_service(), "openai-compatible");
+        assert_eq!(
+            Provider::OpenAiCompatible.key_service(),
+            "openai-compatible"
+        );
         assert_eq!(Provider::Gemini.key_service(), "gemini");
         assert_eq!(Provider::Anthropic.key_service(), "anthropic");
     }
